@@ -46,6 +46,8 @@ public protocol HTTPNetworkTransportDelegate: class {
   /// Opportunity for the delegate to modify the URLRequest before it is sent. `completionHandler` must be called with the
   /// desired URLRequest to send. 
   func networkTransport(_ networkTransport: HTTPNetworkTransport, prepareRequest request: URLRequest, completionHandler: @escaping (URLRequest) -> Void)
+  /// Opportunity for the delegate to inspect and modify a resposne before it is processed by Apollo.
+  func networkTransport(_ networkTransport: HTTPNetworkTransport, request: URLRequest, preprocessData data: Data?, response: URLResponse?, error: Error?, completionHandler: @escaping (Data?, URLResponse?, Error?) -> Void)
 }
 
 /// A network transport that uses HTTP POST requests to send GraphQL operations to a server, and that uses `URLSession` as the networking implementation.
@@ -87,33 +89,12 @@ public class HTTPNetworkTransport: NetworkTransport {
     request.httpBody = try! serializationFormat.serialize(value: body)
     
     let requestOperation = URLRequestOperation(session: session, request: request) { (data: Data?, response: URLResponse?, error: Error?) in
-      if error != nil {
-        completionHandler(nil, error)
-        return
-      }
-      
-      guard let httpResponse = response as? HTTPURLResponse else {
-        fatalError("Response should be an HTTPURLResponse")
-      }
-      
-      if (!httpResponse.isSuccessful) {
-        completionHandler(nil, GraphQLHTTPResponseError(body: data, response: httpResponse, kind: .errorResponse))
-        return
-      }
-      
-      guard let data = data else {
-        completionHandler(nil, GraphQLHTTPResponseError(body: nil, response: httpResponse, kind: .invalidResponse))
-        return
-      }
-      
-      do {
-        guard let body =  try self.serializationFormat.deserialize(data: data) as? JSONObject else {
-          throw GraphQLHTTPResponseError(body: data, response: httpResponse, kind: .invalidResponse)
+      if let delegate = self.delegate {
+        delegate.networkTransport(self, request: request, preprocessData: data, response: response, error: error) {
+          self.handleResponse(for: operation, data: $0, response: $1, error: $2, completionHandler: completionHandler)
         }
-        let response = GraphQLResponse(operation: operation, body: body)
-        completionHandler(response, nil)
-      } catch {
-        completionHandler(nil, error)
+      } else {
+        self.handleResponse(for: operation, data: data, response: response, error: error, completionHandler: completionHandler)
       }
     }
     
@@ -127,6 +108,37 @@ public class HTTPNetworkTransport: NetworkTransport {
     }
 
     return requestOperation
+  }
+  
+  private func handleResponse<Operation>(for operation: Operation, data: Data?, response: URLResponse?, error: Error?, completionHandler: @escaping (_ response: GraphQLResponse<Operation>?, _ error: Error?) -> Void) {
+    if error != nil {
+      completionHandler(nil, error)
+      return
+    }
+    
+    guard let httpResponse = response as? HTTPURLResponse else {
+      fatalError("Response should be an HTTPURLResponse")
+    }
+    
+    if (!httpResponse.isSuccessful) {
+      completionHandler(nil, GraphQLHTTPResponseError(body: data, response: httpResponse, kind: .errorResponse))
+      return
+    }
+    
+    guard let data = data else {
+      completionHandler(nil, GraphQLHTTPResponseError(body: nil, response: httpResponse, kind: .invalidResponse))
+      return
+    }
+    
+    do {
+      guard let body =  try self.serializationFormat.deserialize(data: data) as? JSONObject else {
+        throw GraphQLHTTPResponseError(body: data, response: httpResponse, kind: .invalidResponse)
+      }
+      let response = GraphQLResponse(operation: operation, body: body)
+      completionHandler(response, nil)
+    } catch {
+      completionHandler(nil, error)
+    }
   }
 
   private let sendOperationIdentifiers: Bool

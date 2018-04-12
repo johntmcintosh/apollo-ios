@@ -23,6 +23,26 @@ class HTTPNetworkTransportDelegateTests: XCTestCase {
     }
     self.waitForExpectations(timeout: 1)
   }
+  
+  func testProcessResponse() {
+    let overrideError = NSError(domain: "com.apollographql.Apollo.tests", code: 0, userInfo: nil)
+    
+    let delegate = TransportDelegate()
+    delegate.responseProcessor = { data, response, error in
+      return (nil, nil, overrideError)
+    }
+    
+    let url = URL(string: "http://localhost/endpoint")!
+    MockURLProtocol.nextResponse = MockURLProtocol.Response.make(url: url, response: "{}", statusCode: 200)
+    let transport = HTTPNetworkTransport(url: url, configuration: .mock(), sendOperationIdentifiers: false, delegate: delegate)
+    
+    let expectation = self.expectation(description: "Trigger request with custom preparation hook")
+    _ = transport.send(operation: MockGraphQLQuery()) { (_, error) in
+      XCTAssertEqual(error! as NSError, overrideError)
+      expectation.fulfill()
+    }
+    self.waitForExpectations(timeout: 1)
+  }
 }
 
 private class TransportDelegate: HTTPNetworkTransportDelegate {
@@ -36,6 +56,17 @@ private class TransportDelegate: HTTPNetworkTransportDelegate {
       } else {
         completionHandler(request)
       }
+    }
+  }
+
+  var responseProcessor: ((Data?, URLResponse?, Error?) -> (Data?, URLResponse?, Error?))?
+
+  func networkTransport(_ networkTransport: HTTPNetworkTransport, request: URLRequest, preprocessData data: Data?, response: URLResponse?, error: Error?, completionHandler: @escaping (Data?, URLResponse?, Error?) -> Void) {
+    if let responseProcessor = self.responseProcessor {
+      let (modifiedData, modifiedResponse, modifiedError) = responseProcessor(data, response, error)
+      completionHandler(modifiedData, modifiedResponse, modifiedError)
+    } else {
+      completionHandler(data, response, error)
     }
   }
 }
